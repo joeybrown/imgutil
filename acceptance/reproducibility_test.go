@@ -3,7 +3,6 @@ package acceptance
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"testing"
 
@@ -22,14 +21,6 @@ var registryHost, registryPort string
 
 func newTestImageName() string {
 	return registryHost + ":" + registryPort + "/imgutil-acceptance-" + h.RandString(10)
-}
-
-func setupTest(tb testing.T) func(tb testing.T) {
-	log.Println("setup test")
-
-	return func(tb testing.T) {
-		log.Println("teardown test")
-	}
 }
 
 func TestReproducibility(t *testing.T) {
@@ -71,7 +62,8 @@ func TestReproducibility(t *testing.T) {
 		},
 	}
 
-	for name, tc := range testCases {
+	for name, testCase := range testCases {
+		tc := testCase
 		t.Run(name, func(t *testing.T) {
 			var (
 				imageName1, imageName2 string
