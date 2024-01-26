@@ -3,14 +3,11 @@ package fakes_test
 import (
 	"archive/tar"
 	"fmt"
+	"path/filepath"
 
 	"os"
-	"path/filepath"
 	"sort"
 	"testing"
-
-	"github.com/sclevine/spec"
-	"github.com/sclevine/spec/report"
 
 	"github.com/buildpacks/imgutil"
 	"github.com/buildpacks/imgutil/fakes"
@@ -23,98 +20,108 @@ func newRepoName() string {
 	return "test-image-" + h.RandString(10)
 }
 
-func TestFake(t *testing.T) {
+func TestFakeImage(t *testing.T) {
 	localTestRegistry = h.NewDockerRegistry()
 	localTestRegistry.Start(t)
 	defer localTestRegistry.Stop(t)
 
-	spec.Run(t, "FakeImage", testFake, spec.Parallel(), spec.Report(report.Terminal{}))
-}
-
-func testFake(t *testing.T, when spec.G, it spec.S) {
-	it("implements imgutil.Image", func() {
-		var _ imgutil.Image = fakes.NewImage("", "", nil)
-	})
-
-	when("#SavedNames", func() {
-		when("additional names are provided during save", func() {
-			var (
-				repoName        = newRepoName()
-				additionalNames = []string{
-					newRepoName(),
-					newRepoName(),
-				}
-			)
-
-			it("returns list of saved names", func() {
-				image := fakes.NewImage(repoName, "", nil)
-
-				_ = image.Save(additionalNames...)
-
-				names := image.SavedNames()
-				h.AssertContains(t, names, append(additionalNames, repoName)...)
-			})
-
-			when("an image name is not valid", func() {
-				it("returns a list of image names with errors", func() {
-					badImageName := repoName + ":🧨"
-
-					image := fakes.NewImage(repoName, "", nil)
-
-					err := image.Save(append([]string{badImageName}, additionalNames...)...)
-					saveErr, ok := err.(imgutil.SaveError)
-					h.AssertEq(t, ok, true)
-					h.AssertEq(t, len(saveErr.Errors), 1)
-					h.AssertEq(t, saveErr.Errors[0].ImageName, badImageName)
-					h.AssertError(t, saveErr.Errors[0].Cause, "could not parse reference")
-
-					names := image.SavedNames()
-					h.AssertContains(t, names, append(additionalNames, repoName)...)
-					h.AssertDoesNotContain(t, names, badImageName)
-				})
-			})
+	t.Run("NewImage", func(t *testing.T) {
+		t.Run("implements imgutil.Image", func(t *testing.T) {
+			t.Parallel()
+			var _ imgutil.Image = fakes.NewImage("", "", nil)
 		})
 	})
 
-	when("#FindLayerWithPath", func() {
+	t.Run("SavedNames", func(t *testing.T) {
+		testCases := map[string]struct {
+			validRepoNames []string
+			badRepoName    string
+		}{
+			"returns a list of saved names": {
+				validRepoNames: []string{
+					newRepoName(),
+					newRepoName(),
+					newRepoName(),
+				},
+			},
+			"returns a list of saved names with errors": {
+				validRepoNames: []string{
+					newRepoName(),
+					newRepoName(),
+					newRepoName(),
+				},
+				badRepoName: newRepoName() + ":🧨",
+			},
+		}
+
+		for name, testCase := range testCases {
+			t.Run(name, func(t *testing.T) {
+				tc := testCase
+				t.Parallel()
+
+				image := fakes.NewImage(tc.validRepoNames[0], "", nil)
+				additionalNames := tc.validRepoNames[1:]
+
+				if tc.badRepoName != "" {
+					additionalNames = append(additionalNames, tc.badRepoName)
+				}
+
+				err := image.Save(additionalNames...)
+				saveErr, ok := err.(imgutil.SaveError)
+
+				names := image.SavedNames()
+				h.AssertContains(t, names, tc.validRepoNames...)
+
+				if tc.badRepoName == "" {
+					h.AssertEq(t, ok, false)
+					h.AssertEq(t, len(saveErr.Errors), 0)
+				} else {
+					h.AssertEq(t, ok, true)
+					h.AssertEq(t, len(saveErr.Errors), 1)
+					h.AssertEq(t, saveErr.Errors[0].ImageName, tc.badRepoName)
+					h.AssertError(t, saveErr.Errors[0].Cause, "could not parse reference")
+					h.AssertDoesNotContain(t, names, tc.badRepoName)
+				}
+			})
+		}
+	})
+
+	t.Run("FindLayerWithPath", func(t *testing.T) {
 		var (
 			image      *fakes.Image
 			layer1Path string
 			layer2Path string
 		)
 
-		it.Before(func() {
-			var err error
+		var err error
 
-			image = fakes.NewImage("some-image", "", nil)
+		image = fakes.NewImage("some-image", "", nil)
 
-			layer1Path, err = createLayerTar(map[string]string{})
-			h.AssertNil(t, err)
+		layer1Path, err = createLayerTar(map[string]string{})
+		h.AssertNil(t, err)
 
-			err = image.AddLayer(layer1Path)
-			h.AssertNil(t, err)
+		err = image.AddLayer(layer1Path)
+		h.AssertNil(t, err)
 
-			layer2Path, err = createLayerTar(map[string]string{
-				"/layer2/file1":     "file-1-contents",
-				"/layer2/file2":     "file-2-contents",
-				"/layer2/some.toml": "[[something]]",
-			})
-			h.AssertNil(t, err)
-
-			err = image.AddLayer(layer2Path)
-			h.AssertNil(t, err)
+		layer2Path, err = createLayerTar(map[string]string{
+			"/layer2/file1":     "file-1-contents",
+			"/layer2/file2":     "file-2-contents",
+			"/layer2/some.toml": "[[something]]",
 		})
+		h.AssertNil(t, err)
 
-		it.After(func() {
-			os.RemoveAll(layer1Path)
-			os.RemoveAll(layer2Path)
-		})
+		err = image.AddLayer(layer2Path)
+		h.AssertNil(t, err)
 
-		when("path not found in image", func() {
-			it("should list out contents", func() {
-				_, err := image.FindLayerWithPath("/non-existent/file")
+		t.Run("should list out contents when path not found in image", func(t *testing.T) {
+			t.Parallel()
+			defer func() {
+				os.RemoveAll(layer1Path)
+				os.RemoveAll(layer2Path)
+			}()
 
-				h.AssertError(t, err, fmt.Sprintf(`could not find '/non-existent/file' in any layer.
+			_, err := image.FindLayerWithPath("/non-existent/file")
+			h.AssertError(t, err, fmt.Sprintf(`could not find '/non-existent/file' in any layer.
 
 Layers
 -------
@@ -126,24 +133,27 @@ Layers
   - [F] /layer2/file2
   - [F] /layer2/some.toml
 `,
-					filepath.Base(layer1Path),
-					filepath.Base(layer2Path)),
-				)
-			})
+				filepath.Base(layer1Path),
+				filepath.Base(layer2Path)),
+			)
 		})
 	})
 
-	when("#AnnotateRefName", func() {
-		var repoName = newRepoName()
-
-		it("adds org.opencontainers.image.ref.name annotation", func() {
+	t.Run("AnnotateRefName", func(t *testing.T) {
+		t.Run("annotates the image with the given ref name", func(t *testing.T) {
+			t.Parallel()
+			var repoName = newRepoName()
 			image := fakes.NewImage(repoName, "", nil)
-			image.AnnotateRefName("my-tag")
+			err := image.AnnotateRefName("my-tag")
+			h.AssertNil(t, err)
 
-			_ = image.Save()
+			err = image.Save()
+			h.AssertNil(t, err)
 
 			annotations := image.SavedAnnotations()
-			refName, _ := image.GetAnnotateRefName()
+			refName, err := image.GetAnnotateRefName()
+			h.AssertNil(t, err)
+
 			h.AssertEq(t, annotations["org.opencontainers.image.ref.name"], refName)
 		})
 	})
