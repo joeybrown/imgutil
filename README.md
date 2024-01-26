@@ -7,13 +7,11 @@ Helpful utilities for working with images
 ## Development
 
 To format:
-
 ```bash
 $ make format
 ```
 
 To run tests:
-
 ```bash
 $ make test
 ```
