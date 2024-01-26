@@ -21,10 +21,6 @@ func newRepoName() string {
 }
 
 func TestFakeImage(t *testing.T) {
-	localTestRegistry = h.NewDockerRegistry()
-	localTestRegistry.Start(t)
-	defer localTestRegistry.Stop(t)
-
 	t.Run("NewImage", func(t *testing.T) {
 		t.Run("implements imgutil.Image", func(t *testing.T) {
 			t.Parallel()

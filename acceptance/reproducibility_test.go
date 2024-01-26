@@ -26,17 +26,18 @@ func newTestImageName() string {
 func TestReproducibility(t *testing.T) {
 	dockerConfigDir, err := os.MkdirTemp("", "test.docker.config.dir")
 	h.AssertNil(t, err)
-	defer os.RemoveAll(dockerConfigDir)
-
 	dockerRegistry := h.NewDockerRegistry(h.WithAuth(dockerConfigDir))
+	os.Setenv("DOCKER_CONFIG", dockerRegistry.DockerDirectory)
 	dockerRegistry.Start(t)
-	defer dockerRegistry.Stop(t)
+
+	defer func() {
+		os.RemoveAll(dockerConfigDir)
+		dockerRegistry.Stop(t)
+		os.Unsetenv("DOCKER_CONFIG")
+	}()
 
 	registryHost = dockerRegistry.Host
 	registryPort = dockerRegistry.Port
-
-	os.Setenv("DOCKER_CONFIG", dockerRegistry.DockerDirectory)
-	defer os.Unsetenv("DOCKER_CONFIG")
 
 	testCases := map[string]struct {
 		image1Type, image2Type string
