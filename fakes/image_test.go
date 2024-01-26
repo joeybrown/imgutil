@@ -14,8 +14,6 @@ import (
 	h "github.com/buildpacks/imgutil/testhelpers"
 )
 
-var localTestRegistry *h.DockerRegistry
-
 func newRepoName() string {
 	return "test-image-" + h.RandString(10)
 }
