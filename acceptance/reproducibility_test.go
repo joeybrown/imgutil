@@ -6,12 +6,9 @@ import (
 	"os"
 	"testing"
 
-	dockerclient "github.com/docker/docker/client"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	ggcrremote "github.com/google/go-containerregistry/pkg/v1/remote"
-	"github.com/sclevine/spec"
-	"github.com/sclevine/spec/report"
 
 	"github.com/buildpacks/imgutil"
 	"github.com/buildpacks/imgutil/local"
@@ -25,116 +22,117 @@ func newTestImageName() string {
 	return registryHost + ":" + registryPort + "/imgutil-acceptance-" + h.RandString(10)
 }
 
-func TestAcceptance(t *testing.T) {
+func TestReproducibility(t *testing.T) {
 	dockerConfigDir, err := os.MkdirTemp("", "test.docker.config.dir")
 	h.AssertNil(t, err)
-	defer os.RemoveAll(dockerConfigDir)
-
 	dockerRegistry := h.NewDockerRegistry(h.WithAuth(dockerConfigDir))
+	os.Setenv("DOCKER_CONFIG", dockerRegistry.DockerDirectory)
 	dockerRegistry.Start(t)
-	defer dockerRegistry.Stop(t)
+
+	defer func() {
+		os.RemoveAll(dockerConfigDir)
+		dockerRegistry.Stop(t)
+		os.Unsetenv("DOCKER_CONFIG")
+	}()
 
 	registryHost = dockerRegistry.Host
 	registryPort = dockerRegistry.Port
 
-	os.Setenv("DOCKER_CONFIG", dockerRegistry.DockerDirectory)
-	defer os.Unsetenv("DOCKER_CONFIG")
+	dockerClient := h.DockerCli(t)
 
-	spec.Run(t, "Reproducibility", testReproducibility, spec.Sequential(), spec.Report(report.Terminal{}))
-}
+	daemonInfo, err := dockerClient.Info(context.TODO())
+	h.AssertNil(t, err)
 
-func testReproducibility(t *testing.T, when spec.G, it spec.S) {
-	var (
-		imageName1, imageName2 string
-		layer1, layer2         string
-		mutateAndSave          func(t *testing.T, image imgutil.Image)
-		dockerClient           dockerclient.CommonAPIClient
-		runnableBaseImageName  string
-	)
+	daemonOS := daemonInfo.OSType
 
-	it.Before(func() {
-		dockerClient = h.DockerCli(t)
+	runnableBaseImageName := h.RunnableBaseImage(daemonOS)
+	h.PullIfMissing(t, dockerClient, runnableBaseImageName)
 
-		daemonInfo, err := dockerClient.Info(context.TODO())
-		h.AssertNil(t, err)
+	testCases := map[string]struct {
+		image1Location string
+		image2Location string
+	}{
+		"remote/remote": {
+			image1Location: "remote",
+			image2Location: "remote",
+		},
+		"local/local": {
+			image1Location: "local",
+			image2Location: "local",
+		},
+		"remote/local": {
+			image1Location: "remote",
+			image2Location: "local",
+		},
+	}
 
-		daemonOS := daemonInfo.OSType
+	for name, testCase := range testCases {
+		tc := testCase
+		t.Run(name, func(t *testing.T) {
+			imageName1 := newTestImageName()
+			imageName2 := newTestImageName()
+			labelKey := "label-key-" + h.RandString(10)
+			labelVal := "label-val-" + h.RandString(10)
+			envKey := "env-key-" + h.RandString(10)
+			envVal := "env-val-" + h.RandString(10)
+			workingDir := "working-dir-" + h.RandString(10)
 
-		runnableBaseImageName = h.RunnableBaseImage(daemonOS)
-		h.PullIfMissing(t, dockerClient, runnableBaseImageName)
+			layer1, err := h.CreateSingleFileLayerTar(fmt.Sprintf("/new-layer-%s.txt", h.RandString(10)), "new-layer-"+h.RandString(10), daemonOS)
+			h.AssertNil(t, err)
 
-		imageName1 = newTestImageName()
-		imageName2 = newTestImageName()
-		labelKey := "label-key-" + h.RandString(10)
-		labelVal := "label-val-" + h.RandString(10)
-		envKey := "env-key-" + h.RandString(10)
-		envVal := "env-val-" + h.RandString(10)
-		workingDir := "working-dir-" + h.RandString(10)
+			layer2, err := h.CreateSingleFileLayerTar(fmt.Sprintf("/new-layer-%s.txt", h.RandString(10)), "new-layer-"+h.RandString(10), daemonOS)
+			h.AssertNil(t, err)
 
-		layer1, err = h.CreateSingleFileLayerTar(fmt.Sprintf("/new-layer-%s.txt", h.RandString(10)), "new-layer-"+h.RandString(10), daemonOS)
-		h.AssertNil(t, err)
+			mutateAndSave := func(t *testing.T, img imgutil.Image) {
+				h.AssertNil(t, img.AddLayer(layer1))
+				h.AssertNil(t, img.AddLayer(layer2))
+				h.AssertNil(t, img.SetLabel(labelKey, labelVal))
+				h.AssertNil(t, img.SetEnv(envKey, envVal))
+				h.AssertNil(t, img.SetEntrypoint("some", "entrypoint"))
+				h.AssertNil(t, img.SetCmd("some", "cmd"))
+				h.AssertNil(t, img.SetWorkingDir(workingDir))
+				h.AssertNil(t, img.Save())
+			}
 
-		layer2, err = h.CreateSingleFileLayerTar(fmt.Sprintf("/new-layer-%s.txt", h.RandString(10)), "new-layer-"+h.RandString(10), daemonOS)
-		h.AssertNil(t, err)
+			defer func() {
+				// clean up any local images
+				h.DockerRmi(dockerClient, imageName1)
+				h.DockerRmi(dockerClient, imageName2)
+				h.AssertNil(t, os.Remove(layer1))
+				h.AssertNil(t, os.Remove(layer2))
+			}()
 
-		mutateAndSave = func(t *testing.T, img imgutil.Image) {
-			h.AssertNil(t, img.AddLayer(layer1))
-			h.AssertNil(t, img.AddLayer(layer2))
-			h.AssertNil(t, img.SetLabel(labelKey, labelVal))
-			h.AssertNil(t, img.SetEnv(envKey, envVal))
-			h.AssertNil(t, img.SetEntrypoint("some", "entrypoint"))
-			h.AssertNil(t, img.SetCmd("some", "cmd"))
-			h.AssertNil(t, img.SetWorkingDir(workingDir))
-			h.AssertNil(t, img.Save())
-		}
-	})
+			switch tc.image1Location {
+			case "local":
+				img, err := local.NewImage(imageName1, dockerClient, local.FromBaseImage(runnableBaseImageName))
+				h.AssertNil(t, err)
+				mutateAndSave(t, img)
+				h.PushImage(t, dockerClient, imageName1)
+			case "remote":
+				img, err := remote.NewImage(imageName1, authn.DefaultKeychain, remote.FromBaseImage(runnableBaseImageName))
+				h.AssertNil(t, err)
+				mutateAndSave(t, img)
+			default:
+				t.Fatalf("unsupported image location: %s", tc.image1Location)
+			}
 
-	it.After(func() {
-		// clean up any local images
-		h.DockerRmi(dockerClient, imageName1)
-		h.DockerRmi(dockerClient, imageName2)
-		h.AssertNil(t, os.Remove(layer1))
-		h.AssertNil(t, os.Remove(layer2))
-	})
+			switch tc.image2Location {
+			case "local":
+				img, err := local.NewImage(imageName2, dockerClient, local.FromBaseImage(runnableBaseImageName))
+				h.AssertNil(t, err)
+				mutateAndSave(t, img)
+				h.PushImage(t, dockerClient, imageName2)
+			case "remote":
+				img, err := remote.NewImage(imageName2, authn.DefaultKeychain, remote.FromBaseImage(runnableBaseImageName))
+				h.AssertNil(t, err)
+				mutateAndSave(t, img)
+			default:
+				t.Fatalf("unsupported image type: %s", tc.image2Location)
+			}
 
-	it("remote/remote", func() {
-		img1, err := remote.NewImage(imageName1, authn.DefaultKeychain, remote.FromBaseImage(runnableBaseImageName))
-		h.AssertNil(t, err)
-		mutateAndSave(t, img1)
-
-		img2, err := remote.NewImage(imageName2, authn.DefaultKeychain, remote.FromBaseImage(runnableBaseImageName))
-		h.AssertNil(t, err)
-		mutateAndSave(t, img2)
-
-		compare(t, imageName1, imageName2)
-	})
-
-	it("local/local", func() {
-		img1, err := local.NewImage(imageName1, dockerClient, local.FromBaseImage(runnableBaseImageName))
-		h.AssertNil(t, err)
-		mutateAndSave(t, img1)
-		h.PushImage(t, dockerClient, imageName1)
-
-		img2, err := local.NewImage(imageName2, dockerClient, local.FromBaseImage(runnableBaseImageName))
-		h.AssertNil(t, err)
-		mutateAndSave(t, img2)
-		h.PushImage(t, dockerClient, imageName2)
-
-		compare(t, imageName1, imageName2)
-	})
-
-	it("remote/local", func() {
-		img1, err := remote.NewImage(imageName1, authn.DefaultKeychain, remote.FromBaseImage(runnableBaseImageName))
-		h.AssertNil(t, err)
-		mutateAndSave(t, img1)
-
-		img2, err := local.NewImage(imageName2, dockerClient, local.FromBaseImage(runnableBaseImageName))
-		h.AssertNil(t, err)
-		mutateAndSave(t, img2)
-		h.PushImage(t, dockerClient, imageName2)
-
-		compare(t, imageName1, imageName2)
-	})
+			compare(t, imageName1, imageName2)
+		})
+	}
 }
 
 func compare(t *testing.T, img1, img2 string) {
