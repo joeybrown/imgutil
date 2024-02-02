@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -50,13 +49,25 @@ func TestReproducibility(t *testing.T) {
 	h.PullIfMissing(t, dockerClient, runnableBaseImageName)
 
 	testCases := map[string]struct {
+		image1Location string
+		image2Location string
 	}{
-		"remote/remote": {},
-		"local/local":   {},
-		"remote/local":  {},
+		"remote/remote": {
+			image1Location: "remote",
+			image2Location: "remote",
+		},
+		"local/local": {
+			image1Location: "local",
+			image2Location: "local",
+		},
+		"remote/local": {
+			image1Location: "remote",
+			image2Location: "local",
+		},
 	}
 
-	for name := range testCases {
+	for name, testCase := range testCases {
+		tc := testCase
 		t.Run(name, func(t *testing.T) {
 			imageName1 := newTestImageName()
 			imageName2 := newTestImageName()
@@ -91,12 +102,7 @@ func TestReproducibility(t *testing.T) {
 				h.AssertNil(t, os.Remove(layer2))
 			}()
 
-			// split the test name at the /
-			imageTypes := strings.Split(name, "/")
-			image1Type := imageTypes[0]
-			image2Type := imageTypes[1]
-
-			switch image1Type {
+			switch tc.image1Location {
 			case "local":
 				img, err := local.NewImage(imageName1, dockerClient, local.FromBaseImage(runnableBaseImageName))
 				h.AssertNil(t, err)
@@ -107,10 +113,10 @@ func TestReproducibility(t *testing.T) {
 				h.AssertNil(t, err)
 				mutateAndSave(t, img)
 			default:
-				t.Fatalf("unsupported image type: %s", image1Type)
+				t.Fatalf("unsupported image location: %s", tc.image1Location)
 			}
 
-			switch image2Type {
+			switch tc.image2Location {
 			case "local":
 				img, err := local.NewImage(imageName2, dockerClient, local.FromBaseImage(runnableBaseImageName))
 				h.AssertNil(t, err)
@@ -121,7 +127,7 @@ func TestReproducibility(t *testing.T) {
 				h.AssertNil(t, err)
 				mutateAndSave(t, img)
 			default:
-				t.Fatalf("unsupported image type: %s", image2Type)
+				t.Fatalf("unsupported image type: %s", tc.image2Location)
 			}
 
 			compare(t, imageName1, imageName2)
